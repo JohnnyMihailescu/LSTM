@@ -5,8 +5,11 @@ from pandas import datetime
 from pandas import DataFrame
 from pandas import concat
 from pandas import Series
+import time
+from datetime import timedelta
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_error
 from keras.models import Sequential
 from keras.layers import LSTM
 from keras.layers import Dense
@@ -136,7 +139,7 @@ def invert_scale(scaler, X, value):
 #reshape data into 3D matrix
 #create LSTM model
 #manually fit network to training data
-def fit_lstm(trains, n_lag, n_seq, n_batch, nb_epoch, n_neurons):
+def fit_lstm(trains, n_lag, n_seq, n_batch, nb_epoch, n_neurons, layers):
     #reshape training into [samples, timesteps, features]
     X_trains = []
     y_trains = []
@@ -146,10 +149,13 @@ def fit_lstm(trains, n_lag, n_seq, n_batch, nb_epoch, n_neurons):
         X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
         X_trains.append(X_train)
         y_trains.append(y_train)
-
+    return_sequences = layers > 1
     #create netowork
     model = Sequential()
-    model.add(LSTM(n_neurons, batch_input_shape=(n_batch, X_trains[0].shape[1], X_trains[0].shape[2]), stateful=True))
+    model.add(LSTM(n_neurons, return_sequences=return_sequences, batch_input_shape=(n_batch, X_trains[0].shape[1], X_trains[0].shape[2]), stateful=True))
+    for i in range(layers-1):
+        return_sequences = layers-1-i > 1
+        model.add(LSTM(n_neurons, return_sequences=return_sequences))
     model.add(Dense(y_trains[0].shape[1]))
     model.compile(loss='mean_squared_error', optimizer='adam')
     #fit (train on data)
@@ -169,11 +175,11 @@ def fit_lstm(trains, n_lag, n_seq, n_batch, nb_epoch, n_neurons):
 
 #make single forecast
 def forecast_lstm(model, X, n_batch):
-    X = X.reshape(1, 1, len(X))
+    X = X.reshape(1, len(X), 1)
     forecast = model.predict(X, batch_size=n_batch)
     return [x for x in forecast[0, :]]
 
-#TODO should the training set be forecasted too? something to do with setting the state in the LSTM
+
 def make_forecasts(model, n_batch, test, n_lag):
     forecasts = list()
     for i in range(len(test)):
@@ -182,44 +188,64 @@ def make_forecasts(model, n_batch, test, n_lag):
         forecasts.append(forecast)
     return forecasts
 
-def evaluate_forecasts(test, forecasts, n_lag, n_seq):
+def evaluate_forecasts(test, forecasts, n_lag, n_seq, player_name, epoch_number, neurons, layers, start_time):
     rmse_list = []
+    time_finished = time.time()
+    elapsed_time = time_finished-start_time
+    #file = open("{}_{}epochs_{}neurons_{}lag_{}layers.txt".format(player_name, epoch_number, neurons, n_lag, layers), "w+")
+    time_string = "Time elapsed: {}".format(str(timedelta(seconds=round(elapsed_time))))
+    #file.write(time_string)
     for i in range(n_seq):
         actual = [row[i] for row in test]
         predicted = [forecast[i] for forecast in forecasts]
         rmse = math.sqrt(mean_squared_error(actual, predicted))
-        print('t+%d RMSE: %f' % ((i+1), rmse))
+        mae = mean_absolute_error(actual, predicted)
+        #file.write('t+%d RMSE: %f MAE: %f\n' % ((i+1), rmse, mae))
+        #print('t+%d RMSE: %f' % ((i+1), rmse))
         rmse_list.append(rmse)
+
     return rmse_list
 
-def plot_forecasts(series, forecasts, n_test, player_name, n_epochs, n_neurons):
-    pyplot.plot(series.values)
+def plot_forecasts(series, forecasts, n_test, player_name, n_seq, n_epochs, n_neurons, layers):
+    pyplot.plot(series.values, label='Actual Ranking Points')
+    pyplot.title("Ranking points of {} over time{} {}".format(player_name, n_neurons, layers))
+    pyplot.xlabel("Timesteps")
+    pyplot.ylabel("Ranking points")
     for i in range(len(forecasts)):
         off_s = len(series) - n_test + i - 1
         off_e = off_s + len(forecasts[i])+1
         xaxis = [x for x in range(off_s, off_e)]
         yaxis = [series.values[off_s]] + forecasts[i]
-        pyplot.plot(xaxis, yaxis, color='red')
+        if i == 0:
+            pyplot.plot(xaxis, yaxis, color='red', label='Forecasted Ranking Points')
+        else:
+            pyplot.plot(xaxis, yaxis, color='red')
+    axes = pyplot.gca()
+    #axes.set_xlim([off_s, off_e+n_seq])
+    pyplot.legend()
     pyplot.show()
     #pyplot.savefig('{}_{}_{}'.format(player_name, n_epochs, n_neurons))
 #do a forecast
 def forecast():
+    #get start time
+    start_time = time.time()
     # configuration parameters
     has_diff = False
-    n_lag = 1
+    n_lag = 10
     n_seq = 20
     n_test = 40
-    n_epochs = 2000
+    n_epochs = 100
     n_batch = 1
     n_neurons = 3
-    num_players = 10
+    layers = 1
+    num_players = 1
     time_series = []
     scalers = []
     trains = []
     tests = []
     player_names = ["Roger Federer", "Lleyton Hewitt", "Feliciano Lopez", "Richard Gasquet", "Rafael Nadal", "David Ferrer",
                     "Mikhail Youzhny", "Novak Djokovic", "Radek Stepanek", "Tomas Berdych"]
-    #player_names = ["Feliciano Lopez"]
+    player_names = ["Marco Chiudinelli"]
     path = r'C:\Users\John\Google Drive\Machine Learning\Python\LSTM\data'
     #load dataset, loading all data from 2000 to 2016
     series = load_data(path)
@@ -243,8 +269,8 @@ def forecast():
         trains.append(train)
         tests.append(test)
     print("Time series transformed, partitioned and rescaled " + strftime("%Y-%m-%d %H:%M:%S"))
-    #fit the model TODO tune these parameters
-    lstm_model = fit_lstm(trains, n_lag, n_seq, n_batch, n_epochs, n_neurons)
+    #fit the model
+    lstm_model = fit_lstm(trains, n_lag, n_seq, n_batch, n_epochs, n_neurons, layers)
     print("Training on lstm done " + strftime("%Y-%m-%d %H:%M:%S"))
     #forecast the entire training data to build up state for forecasting
 
@@ -255,31 +281,38 @@ def forecast():
         actual = [row[n_lag:] for row in tests[i]]
         actual = inverse_transform(time_series[i], actual, scalers[i], n_test+n_seq-1, has_diff)
         forecasts.append(forecast)
-        evaluate_forecasts(actual, forecasts[i], n_lag, n_seq)
-        plot_forecasts(time_series[i], forecasts[i], n_test+n_seq-1, player_names[i], n_epochs, n_neurons)
+        evaluate_forecasts(actual, forecasts[i], n_lag, n_seq, player_names[0], n_epochs, n_neurons, layers, start_time)
+        plot_forecasts(time_series[i], forecasts[i], n_test+n_seq-1, player_names[i], n_seq, n_epochs, n_neurons, layers)
         print("Forecasting done " + strftime("%Y-%m-%d %H:%M:%S"))
-        plot_model(lstm_model, to_file='tennis_model.png')
+        #plot_model(lstm_model, to_file='tennis_model.png')
 
 
 #used to get the rmse of the forecasts on a dataset
-def evaluate_model(model, raw_data, scaled_data, scaler, offset, batch_size, n_seq, n_lag, n_test, time_series, has_diff):
-    X, y = scaled_data[:, 0:-n_lag], scaled_data[:, n_lag:]
+def evaluate_model(model, raw_data, scaled_data, scaler, offset, batch_size, n_seq, n_lag, n_test, time_series, has_diff, player_name, n_epochs, neurons, layers, start_time):
+    X, y = scaled_data[:, 0:n_lag], scaled_data[:, n_lag:]
     reshaped_X = X.reshape(X.shape[0], X.shape[1], 1)
-    predictions = make_forecasts(model, batch_size, reshaped_X, n_lag)
+    predictions = list()
+    for i in range(reshaped_X.shape[0]):
+        input = reshaped_X[i, :, :]
+        forecast = forecast_lstm(model, input, batch_size)
+        predictions.append(forecast)
     predictions = inverse_transform(time_series, predictions, scaler, n_test+n_seq-1, has_diff)
-    rmse = evaluate_forecasts(raw_data, predictions, n_lag, n_seq)
+    rmse = evaluate_forecasts(raw_data, predictions, n_lag, n_seq, player_name, n_epochs, neurons, layers, start_time)
     return rmse
 
 #fitting and forecasting specifically for evaluating model strength
-def test_lstm(train, test, raw_data, scaler, n_lag, n_seq, n_test, n_batch, nb_epoch, n_neurons, time_series, has_diff):
+def test_lstm(train, test, raw_data, scaler, n_lag, n_seq, n_test, n_batch, nb_epoch, n_neurons, time_series, has_diff, layers, player_name, start_time):
     #reshape training into [samples, timesteps, features]
 
     X_train, y_train = train[:, 0:n_lag], train[:, n_lag:]
     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
-
+    return_sequences = layers>1
     #create netowork
     model = Sequential()
-    model.add(LSTM(n_neurons, batch_input_shape=(n_batch, X_train.shape[1], X_train.shape[2]), stateful=True))
+    model.add(LSTM(n_neurons, return_sequences=return_sequences, batch_input_shape=(n_batch, X_train.shape[1], X_train.shape[2]), stateful=True))
+    for i in range(layers-1):
+        return_sequences = layers-i-1 > 1
+        model.add(LSTM(n_neurons, return_sequences=return_sequences))
     model.add(Dense(y_train.shape[1]))
     model.compile(loss='mean_squared_error', optimizer='adam')
     #fit (train on data)
@@ -292,11 +325,11 @@ def test_lstm(train, test, raw_data, scaler, n_lag, n_seq, n_test, n_batch, nb_e
         model.reset_states()
         actual_train = [row[n_lag:] for row in train]
         actual_train = inverse_transform(time_series, actual_train, scaler, n_test+n_seq-1, has_diff)
-        train_rmse.append(evaluate_model(model, actual_train, train, scaler, 0, n_batch, n_seq, n_lag, n_test, time_series, has_diff))
+        train_rmse.append(evaluate_model(model, actual_train, train, scaler, 0, n_batch, n_seq, n_lag, n_test, time_series, has_diff, player_name, nb_epoch, n_neurons, layers, start_time))
 
         actual_test = [row[n_lag:] for row in test]
         actual_test = inverse_transform(time_series, actual_test, scaler, n_test+n_seq-1, has_diff)
-        test_rmse.append(evaluate_model(model, actual_test, test, scaler, 0, n_batch, n_seq, n_lag, n_test, time_series, has_diff))
+        test_rmse.append(evaluate_model(model, actual_test, test, scaler, 0, n_batch, n_seq, n_lag, n_test, time_series, has_diff, player_name, nb_epoch, n_neurons, layers, start_time))
         model.reset_states()
         #print("training accuracy = {}".format(numpy.mean(mean_acc)))
         #print("training loss = {}".format(numpy.mean(mean_loss)))
@@ -308,15 +341,17 @@ def test_lstm(train, test, raw_data, scaler, n_lag, n_seq, n_test, n_batch, nb_e
     return histories
 #perform diagnostic test
 def run_test():
-    repeats = 7
+    start_time = time.time()
+    repeats = 5
     n_batch = 1
-    n_epochs = 2000
+    n_epochs = 1000
     n_neurons = 3
     n_test = 40
-    n_lag = 1
+    n_lag = 10
     n_seq = 20
     has_diff = False
-    player_name = "Tomas Berdych"
+    layers = 3
+    player_name = "Roger Federer"
     path = r'C:\Users\John\Google Drive\Machine Learning\Python\LSTM\data'
     # loa d dataset, loading all data from 2000 to 2016
     series = load_data(path)
@@ -329,12 +364,12 @@ def run_test():
     # print(time_series)
     scaler, train, test = prepare_data(time_series, n_test, n_lag, n_seq, has_diff)
     for i in range(repeats):
-        histories = test_lstm(train, test, time_series.values, scaler, n_lag, n_seq, n_test, n_batch, n_epochs, n_neurons, time_series, has_diff)
+        histories = test_lstm(train, test, time_series.values, scaler, n_lag, n_seq, n_test, n_batch, n_epochs, n_neurons, time_series, has_diff, layers, player_name, start_time)
         pyplot.plot(histories[0]['train'], color = 'blue')
         pyplot.plot(histories[0]['test'], color = 'orange')
         print('%d) TrainRMSE=%f, TestRMSE=%f' % (i, histories[0]['train'].iloc[-1], histories[0]['test'].iloc[-1]))
     pyplot.show(block=False)
-    pyplot.savefig('epochs_diagnostic_{}_{}neurons.png'.format(n_epochs, n_neurons))
-
+    pyplot.savefig('epochs_diagnostic_{}_{}3layers_neurons5repeats.png'.format(n_epochs, n_neurons))
+    print("Finished " + strftime("%Y-%m-%d %H:%M:%S"))
 
 forecast()
